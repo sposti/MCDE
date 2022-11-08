@@ -1,0 +1,822 @@
+---
+title: "Tarea Nº 1"
+author: "Grupo 6: Hirsig, Maria Fernanda; Postiglione, Sebastián; Yualé, Alberto"
+date: "2022-11-08"
+output: 
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    theme: journal
+---
+
+------------------------------------------------------------------------
+
+### Análisis Inteligente de Datos
+
+### Maestría en Explotación de Datos y Gestión del Conocimiento
+
+### Universidad Austral - Sede Rosario
+
+### Cohorte 2022
+
+------------------------------------------------------------------------
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r eval = TRUE, echo = TRUE}
+knitr::include_graphics("https://images.uncyclomedia.co/inciclopedia/es/7/73/Charly_Garc%C3%ADa_bigote_bicolor.jpg")  
+```
+
+[enlace a Wikipedia](https://es.wikipedia.org/wiki/Charly_Garc%C3%ADa)
+
+### Bibliotecas
+
+Se cargan las bibliotecas (libraries) necesarias:
+
+```{r bibliotecas, include=TRUE, warning=FALSE, message=FALSE}
+
+library(sas7bdat)
+library(readxl)
+library(sqldf)
+library(readr)
+library(httr)
+library(data.table)
+library(tidyverse)
+library(writexl)
+library(devtools)
+library(styler)
+library(lintr)
+require(knitr)
+
+```
+
+### Variables Generales
+
+Se limpia el ambiente de trabajo, se corrige vista científica de datos a los fines de evitar exportaciones ilegibles en campos numéricos. Silenciado de warnings.
+
+```{r variables generales,warning=FALSE, message=FALSE}
+rm(list = ls()) ##limpio area de trabajo
+options(scipen = 100) ##para evitar la notacion científica en campos pequeños o muy grandes
+options(warn=-1) ##evito los warnings especialmente x los updates con sqldf
+
+```
+
+## Definición del Trabajo
+
+El presente documento toma como puntapié inicial el archivo **datos_charly.zip** facilitado por la cátedra.\
+El mismo contiene:
+
+-   **5 archivos**: albums.xlsx, bbatj.sas7bdat, porsuigieco.txt, serugiran.xlsx y suigeneris.csv
+
+-   **2 carpetas**:
+
+    -   **solista**: conteniendo 21 archivos en formato txt (uno por cada canción del album)
+
+    -   **lmdhp**: conteniendo 2 subcarpetas
+
+        -   **album_la_maquina_de_hacer_pajaros**: conteniendo 7 archivos en formato txt (uno por cada canción del primer álbum homónimo del grupo (La máquina de hacer pájaros)
+
+        -   **album_peliculas**: segundo y ultimo álbum de lmdhp conteniendo 8 archivos en formato txt con las canciones de álbum.
+
+### Consigna
+
+Generar un único conjunto de datos con 578 observaciones (canciones) y 22 variables y guardarlo en un archivo de texto separado por tabulaciones llamado resultado.txt.
+
+### Metodología
+
+1.  Importar el archivo **datos_charly.zip**
+
+2.  Descomprimirlo en carpeta raiz
+
+3.  Importar archivos secuencialmente.
+
+4.  Unificación en Discografía
+
+5.  Análisis, limpieza y transformación de archivos.
+
+6.  Exportación a resultado.txt
+
+### 1) Importación datos_charly.zip
+
+El archivo zip conteniendo las consignas se carga en [enlace a GitHub](https://github.com/sposti/MCDE/blob/main/datos_charly.zip?)\
+
+```{r Importacion archivo ,warning=FALSE, message=FALSE}
+url_archivo <- "https://github.com/sposti/MCDE/blob/main/datos_charly.zip?raw=TRUE"
+archivo <- "datos_charly.zip"
+download.file(url_archivo, archivo, mode = "wb")
+```
+
+### 2) Extracción contenido de datos_charly.zip
+
+Creamos df con archivos a los solos fines de identificar los extraidos, archivos nos acompañará hasta el final del trabajo ya que lo usaremos para hacer seguimiento de Importaciones y cantidades por cada origen de datos (Campos: Imported y Q)
+
+Se crea una carpeta /datos_charly/ para extraer el contenido.
+
+Se crea archivos con el detalle del contenido de la carpeta arriba poblada indicando si se trata de un archivo o una subcarpeta. Se agregan campos Imported y Q que serán utlizados como log y control del proceso de importación.
+
+```{r  - Unzziping Charly  - extraidos, warning=FALSE, message=FALSE}
+ 
+outDir<-"./datos_charly/"
+unzip(archivo,exdir=outDir)
+
+archivos <- as.data.frame(list.files(outDir))
+colnames(archivos)[1]  <- "col"  
+archivos <- sqldf("select col as objeto, case when instr(col, '.') >0 then 'archivo' else 'directorio' end as tipo, 0 as Imported, 0 as Q from archivos order by tipo, objeto")
+
+archivos
+
+
+
+```
+
+Observamos que se han extraído 5 archivos y 2 directorios.
+
+### 3) Importaciones secuenciales de orígenes de datos.
+
+Se decide una importación y breve análisis de cada origen de datos ya que los mismos tienen formatos y extensiones disímiles.
+
+#### a) albums.xlsx
+
+Archivo en formato xlsx (excel) conteniendo todos los álbumes que serán analizados en el presente trabajo.\
+Además se utiliza albums como puntero, para identificar cuál archivo vamos a importar y estamos trabajando.\
+**Albums.xlsx** es importado en **Albumes.**\
+
+```{r albumes, warning=FALSE, message=FALSE}
+
+albums <- sqldf("select objeto from archivos where imported = 0 order by tipo limit 1")
+
+albumes <- read_excel(paste0(outDir,albums))
+
+albumes$origen <- "NA" ##creo variable origen para garantizar Trazabilidad y seguimiento
+
+archivos <- sqldf(c("UPDATE archivos
+                      SET imported = 1
+                      , Q = (select count(*) from albumes)
+                      WHERE EXISTS (SELECT 1
+                                    FROM albums
+                                    WHERE archivos.objeto = albums.objeto
+                                    )"
+                    , "select * from main.archivos"
+)
+)
+
+
+archivos
+
+```
+
+Creamos df **albumes** a los solos fines de identificar los extraidos y mostrar el avance de las importaciones.
+
+**Campos**:
+
+-   id: Identificador de Album dentro de la plataforma Spotify.
+-   name: nombre de album
+-   album_type: tipo de album
+-   artist: nombre del artista. No todos los álbumes son de Charly como solista; además de su prolífica discografía ha formado varias bandas.
+-   categoria (detalle)
+
+```{r categorias , warning=FALSE, message=FALSE}
+categoria <- sqldf("select categoria from albumes group by categoria")
+
+categoria
+
+```
+
+-   origen :nombre del origen para garantizar la trazabilidad.
+
+#### b) bbatj.sas7bdat
+
+Archivo en formato sas7bdat conteniendo datos de canciones del álbum\
+Billy Bond and The Jets\
+Proceso de Importación album y resultados de avances archivos.
+
+Se pasa el cursor albums al proximo id de archivo a importar.
+
+Se crea **sas**, se le agrega campo origen a los fines de insertarle el nombre del archivo que le da origen.
+
+Se actualiza origen en **albumes**
+
+Se actualiza **archivos** a los fines de indicar el avance (Imported = 1 para archivos ya importados y Q = cantidad de registros)
+
+```{r importo desde sas , warning=FALSE, message=FALSE}
+
+albums <- sqldf("select objeto from archivos where imported = 0 order by tipo limit 1") ##recreo para seleccionar proximo registro
+
+sas <- read.sas7bdat(paste0(outDir,albums))
+
+sas$origen <- "sas" ##identifico origen. Es para garantizar la trazabilidad y orden.
+
+sas$instrumentalness <- format(as.numeric(as.character(sas$instrumentalness)), scientific = F) #mejoro visualmente campo notacion cientifica
+
+
+#recreo albumes en lugar de usar update de SQL, reemplazamos campo por sub query
+albumes <- sqldf("select a.ID, a.name, a.album_type, a.artist, a.categoria
+                 , coalesce(b.origen, a.origen) as origen from albumes a left join (select album_id, max(origen) origen from sas group by album_id) b on a.id = b.album_id")
+
+
+
+archivos <- sqldf(c("UPDATE archivos
+                      SET imported = 1
+                      , Q = (select count(*) from sas)
+                      WHERE EXISTS (SELECT 1
+                                    FROM albums
+                                    WHERE archivos.objeto = albums.objeto
+                                    )"
+                    , "select * from main.archivos"
+)
+)
+
+#***Avance Importaciones
+archivos
+
+```
+
+##### Resumen avance
+
+Se muestra breve resumen de avance (Pendiente vs Origenes ya procesados)
+
+```{r resumen albumes, warning=FALSE, message=FALSE}
+##resumen albumes
+res <- sqldf("select case when origen = 'NA' then 'Pendiente' else origen end as origen, count(distinct(id)) Q from albumes group by origen")
+
+res
+
+```
+
+#### c) porsuigieco.txt
+
+Archivo en formato txt conteniendo datos de canciones del único disco de PorSuiGieco ( Raúl Porchetto, Nito Mestre, León Gieco, María Rosa Yorio y Charly García)
+
+```{r porsuigieco , warning=FALSE, message=FALSE}
+##importo listado porsuigieco )txt)
+
+albums <- sqldf("select objeto from archivos where imported = 0 order by tipo limit 1")
+
+porsuigieco <- read_delim(paste0(outDir,albums), 
+                          delim = "|", escape_double = FALSE, trim_ws = TRUE)
+
+porsuigieco$origen <- "porsuigieco" ##identifico campo origen
+
+#recreo albumes updateando campo origen
+albumes <- sqldf("select a.ID, a.name, a.album_type, a.artist, a.categoria
+                 , coalesce(b.origen, a.origen) as origen from albumes a 
+                 left join (select album_id, max(origen) origen from porsuigieco group by album_id) b on a.id = b.album_id")
+
+
+archivos <- sqldf(c("UPDATE archivos
+                      SET imported = 1
+                      , Q = (select count(*) from porsuigieco)
+                      WHERE EXISTS (SELECT 1
+                                    FROM albums
+                                    WHERE archivos.objeto = albums.objeto
+                                    )"
+                    , "select * from main.archivos"
+)
+)
+
+##Avance Importaciones
+archivos
+
+
+```
+
+##### Resumen avance
+
+```{r resumen albumes2, warning=FALSE, message=FALSE}
+##resumen albumes
+res <- sqldf("select case when origen = 'NA' then 'Pendiente' else origen end as origen, count(distinct(id)) Q from albumes group by origen")
+
+res
+
+```
+
+#### d) serugiran.xlsx
+
+Archivo excel conteniendo las 122 canciones de 45 álbumes de sSerú Giran.
+
+```{r Serú Giran , warning=FALSE, message=FALSE}
+
+albums <- sqldf("select objeto from archivos where imported = 0 order by tipo limit 1")
+
+##importo serugiran (xlsx)
+serugiran <- read_excel(paste0(outDir,albums))
+
+serugiran$instrumentalidad <- format(as.numeric(as.character(serugiran$instrumentalidad)), scientific = F)
+
+serugiran$origen <- "serugiran" ##identifico campo origen
+
+
+#recreo albumes updateando campo origen
+albumes <- sqldf("select a.ID, a.name, a.album_type, a.artist, a.categoria
+                 , coalesce(b.origen, a.origen) as origen from albumes a 
+                 left join (select album_id, max(origen) origen from 
+                 serugiran group by album_id) b on a.id = b.album_id")
+
+
+
+archivos <- sqldf(c("UPDATE archivos
+                      SET imported = 1
+                      , Q = (select count(*) from serugiran)
+                      WHERE EXISTS (SELECT 1
+                                    FROM albums
+                                    WHERE archivos.objeto = albums.objeto
+                                    )"
+                    , "select * from main.archivos"
+)
+)
+
+##Avance Importaciones
+archivos
+```
+
+##### Resumen avance
+
+```{r resumen3 , warning=FALSE, message=FALSE}
+##resumen albumes
+res <- sqldf("select case when origen = 'NA' then 'Pendiente' else origen end as origen, count(distinct(id)) Q from albumes group by origen")
+
+res
+
+```
+
+#### e) suigeneris.csv
+
+Archivo csv conteniendo 140 canciones de Sui Generis con la particularidad que vienen con datos faltantes en campos relacionados a nombre e Id de álbum. Se importa y luego se subsanan faltantes mediante funcion que recorre las filas y actualiza los valores.
+
+```{r suigeneris , warning=FALSE, message=FALSE}
+albums <- sqldf("select objeto from archivos where imported = 0 order by tipo limit 1")
+
+
+##importo suigeneris
+suigeneris <- read_csv(paste0(outDir,albums))
+
+##actualizo campos en NA secuencialmente, aprovecho q están ordenados
+
+eof <- sqldf("select count(*) q from suigeneris")
+
+for (line in 1:paste0(eof))
+{
+  if(suigeneris[line,2] == 1)
+    {
+    albumid <- suigeneris[line,3] #cargo album_id en variable albumid
+    album <- suigeneris[line,4] # cargo album_name en varianle album
+    }else 
+      {
+    suigeneris[line,3] <- albumid #vuelvo variable en album_id mientras cancion <>1 
+    suigeneris[line,4] <- album #vuelco variable en album_name mientras cancion <>1
+      }
+}
+
+
+
+##Origen suigeneris
+suigeneris$origen <- "suigeneris"
+
+##Formateo campo instrumentalness
+suigeneris$instrumentalness <- format(as.numeric(as.character(suigeneris$instrumentalness)), scientific = F)
+
+#recreo albumes updateando campo origen
+albumes <- sqldf("select a.ID, a.name, a.album_type, a.artist, a.categoria
+                 , coalesce(b.origen, a.origen) as origen from albumes a 
+                 left join (select album_id, max(origen) origen from 
+                 suigeneris group by album_id) b on a.id = b.album_id")
+
+
+
+archivos <- sqldf(c("UPDATE archivos
+                      SET imported = 1
+                      , Q = (select count(*) from suigeneris)
+                      WHERE EXISTS (SELECT 1
+                                    FROM albums
+                                    WHERE archivos.objeto = albums.objeto
+                                    )"
+                    , "select * from main.archivos"
+)
+)
+
+##Avance Importaciones
+archivos
+```
+
+##### Resumen avance
+
+```{r resumen4 , warning=FALSE, message=FALSE}
+##resumen albumes
+res <- sqldf("select case when origen = 'NA' then 'Pendiente' else origen end as origen, count(distinct(id)) Q from albumes group by origen")
+
+res
+
+```
+
+#### f) La Maquina de Hacer Pájaros
+
+Carpeta conteniendo 2 subcarpetas; una por cada álbum.
+
+Selección Carpeta y proceso de Importacion album homónimo del grupo lmdhp
+
+##### f.1) La Maquina de Hacer Pájaros Album lmdhp
+
+```{r lmdhp , warning=FALSE, message=FALSE}
+
+albums <- sqldf("select objeto from archivos where imported = 0 order by tipo limit 1")
+
+pajaros <- as.data.frame(list.dirs(paste0(outDir,albums)))
+colnames(pajaros)[1]  <- "col" 
+raizpajaros <- sqldf("select col from pajaros where col not in (select col from pajaros limit 1) limit 1")
+
+ruta <-substr(paste0(raizpajaros, "/"), 3, stop = nchar(raizpajaros))
+
+files <- list.files(path = paste0(raizpajaros, "/"),pattern = '*.txt')    
+for(i in files) {
+  x <- read.table(paste0(ruta, "/",i), header=FALSE, , sep=":",strip.white=T, check.names=TRUE)
+  assign(i,x)  
+}
+
+files <- as.data.frame(files) 
+colnames(files)[1]  <- "col"   
+s <- sqldf("select col, replace(replace(replace(col, ' ', ''),',',''),'.txt','') as rep  from files")
+
+##ver bucle
+AhTeViEntreLasLuces <- setNames(data.frame(t(`Ah Te Vi Entre Las Luces.txt`[,-1])), `Ah Te Vi Entre Las Luces.txt`[,1])
+BoletosPasesYAbonos <- setNames(data.frame(t(`Boletos, Pases Y Abonos.txt`[,-1])), `Boletos, Pases Y Abonos.txt`[,1])
+Bubulina <- setNames(data.frame(t(`Bubulina.txt`[,-1])), `Bubulina.txt`[,1])
+ComoMataelVientoNorte <- setNames(data.frame(t(`Como Mata el Viento Norte.txt`[,-1])), `Como Mata el Viento Norte.txt`[,1])
+NoPuedoVermeMas <- setNames(data.frame(t(`No Puedo Verme Mas.txt`[,-1])), `No Puedo Verme Mas.txt`[,1])
+PorProbarElVinoYElAguaSalada <- setNames(data.frame(t(`Por Probar El Vino Y El Agua Salada.txt`[,-1])), `Por Probar El Vino Y El Agua Salada.txt`[,1])
+RockAndRoll <- setNames(data.frame(t(`Rock And Roll.txt`[,-1])), `Rock And Roll.txt`[,1])
+
+
+##unifico canciones en album: album_la_maquina_de_hacer_pajaros
+album_la_maquina_de_hacer_pajaros <- sqldf("select * from 
+                                            (select * from AhTeViEntreLasLuces
+                                              union all
+                                              select * from BoletosPasesYAbonos
+                                              union all
+                                              select * from Bubulina
+                                              union all
+                                              select * from ComoMataelVientoNorte
+                                              union all
+                                              select * from NoPuedoVermeMas
+                                              union all
+                                              select * from PorProbarElVinoYElAguaSalada
+                                              union all
+                                              select * from RockAndRoll
+                                           ) order by track_number")
+
+
+##agrego origen
+album_la_maquina_de_hacer_pajaros$origen <- "album_la_maquina_de_hacer_pajaros"
+
+##arreglo visualizacion campo
+album_la_maquina_de_hacer_pajaros$instrumentalness <- format(as.numeric(as.character(album_la_maquina_de_hacer_pajaros$instrumentalness)), scientific = F)
+
+##genero df para actualizar campos que vienen vacios
+datospajaros <- sqldf("select id as album_id, name as album_name from albumes where id = '4uXadaCsBVwLK6s5V14Kjw'")
+
+album_la_maquina_de_hacer_pajaros$album_id <- datospajaros[,1]
+album_la_maquina_de_hacer_pajaros$album_name <- datospajaros[,2]
+
+##rearmo albumes
+albumes <- sqldf("select a.ID, a.name, a.album_type, a.artist, a.categoria
+                 , coalesce(b.origen, a.origen) as origen from albumes a 
+                 left join (select album_id, max(origen) origen from 
+                 album_la_maquina_de_hacer_pajaros group by album_id) b on a.id = b.album_id")
+
+##elimino elementos en desuso
+to_be_deleted <- s$col
+rm(list = c(to_be_deleted))
+
+to_be_deleted <- s$rep
+rm(list = c(to_be_deleted))
+
+rm(files)
+
+rm(s)
+
+rm(id)
+
+rm(x)
+
+
+
+archivos <- sqldf(c("UPDATE archivos
+                      SET imported = 1
+                      , Q = (select count(*) from album_la_maquina_de_hacer_pajaros)
+                      WHERE EXISTS (SELECT 1
+                                    FROM albums
+                                    WHERE archivos.objeto = albums.objeto
+                                    )"
+                    , "select * from main.archivos"
+)
+)
+
+##Avance Importaciones
+archivos
+
+
+
+```
+
+##### Resumen avance
+
+```{r resumen5 , warning=FALSE, message=FALSE}
+##resumen albumes
+res <- sqldf("select case when origen = 'NA' then 'Pendiente' else origen end as origen, count(distinct(id)) Q from albumes group by origen")
+
+res
+
+```
+
+##### f.2) La Maquina de Hacer Pájaros Album Peliculas
+
+```{r lmdhp peliculas, warning=FALSE, message=FALSE}
+
+
+raizpajaros <- sqldf("select col from pajaros limit 1 offset (SELECT COUNT(*) - 1 FROM pajaros)")
+
+ruta <-substr(paste0(raizpajaros, "/"), 3, stop = nchar(raizpajaros))
+
+files <- list.files(path = paste0(raizpajaros, "/"),pattern = '*.txt')    
+for(i in files) {
+  x <- read.table(paste0(ruta, "/",i), header=FALSE, , sep=":",strip.white=T, check.names=TRUE)
+  assign(i,x)  
+}
+
+files <- as.data.frame(files) 
+colnames(files)[1]  <- "col"   
+s <- sqldf("select col, replace(replace(replace(col, ' ', ''),',',''),'.txt','') as rep  from files")
+
+
+
+##renombre canciones para eliminar espacios de nombres
+EnLasCallesDeCostaRica <- setNames(data.frame(t(`En Las Calles De Costa Rica.txt`[,-1])), `En Las Calles De Costa Rica.txt`[,1])
+Hipercandombe <- setNames(data.frame(t(`Hipercandombe.txt`[,-1])), `Hipercandombe.txt`[,1])
+MarilynLaCenicientaYLasMujeres <- setNames(data.frame(t(`Marilyn, La Cenicienta Y Las Mujeres.txt`[,-1])), `Marilyn, La Cenicienta Y Las Mujeres.txt`[,1])
+NoTeDejesDesanimar <- setNames(data.frame(t(`No Te Dejes Desanimar.txt`[,-1])), `No Te Dejes Desanimar.txt`[,1])
+Obertura777Instrumental <- setNames(data.frame(t(`Obertura 777 - Instrumental.txt`[,-1])), `Obertura 777 - Instrumental.txt`[,1])
+QueSePuedeHacerSalvoVerPeliculas <- setNames(data.frame(t(`Que Se Puede Hacer Salvo Ver Peliculas.txt`[,-1])), `Que Se Puede Hacer Salvo Ver Peliculas.txt`[,1])
+RutaPerdedora <- setNames(data.frame(t(`Ruta Perdedora.txt`[,-1])), `Ruta Perdedora.txt`[,1])
+VendedorDeLasChicasDePlastico <- setNames(data.frame(t(`Vendedor De Las Chicas De Plastico.txt`[,-1])), `Vendedor De Las Chicas De Plastico.txt`[,1])
+
+
+##unifico canciones en album: album_peliculas
+album_peliculas <- sqldf("select * from 
+                                            (select * from EnLasCallesDeCostaRica
+                                              union all
+                                              select * from Hipercandombe
+                                              union all
+                                              select * from MarilynLaCenicientaYLasMujeres
+                                              union all
+                                              select * from NoTeDejesDesanimar
+                                              union all
+                                              select * from Obertura777Instrumental
+                                              union all
+                                              select * from QueSePuedeHacerSalvoVerPeliculas
+                                              union all
+                                              select * from RutaPerdedora
+                                              union all
+                                              select * from VendedorDeLasChicasDePlastico
+                                           ) order by track_number")
+
+##seteo origen
+album_peliculas$origen <- "album_peliculas"
+
+##mejoro visibilidad campo
+album_peliculas$instrumentalness <- format(as.numeric(as.character(album_peliculas$instrumentalness)), scientific = F)
+
+##genero DF para actualizar campos vacios
+datospeliculas <- sqldf("select id as album_id, name as album_name from albumes where name = 'Peliculas'")
+
+##actualizo campos vacios
+album_peliculas$album_id <- datospeliculas[,1]
+album_peliculas$album_name <- datospeliculas[,2]
+
+##genero albumes
+albumes <- sqldf("select a.ID, a.name, a.album_type, a.artist, a.categoria
+                 , coalesce(b.origen, a.origen) as origen from albumes a 
+                 left join (select album_id, max(origen) origen from 
+                 album_peliculas group by album_id) b on a.id = b.album_id")
+
+##elimino variables en desuso
+to_be_deleted <- s$col
+rm(list = c(to_be_deleted))
+
+to_be_deleted <- s$rep
+rm(list = c(to_be_deleted))
+
+hq <- sqldf("select count(*) q from (select id from album_peliculas union all select id from   album_la_maquina_de_hacer_pajaros)")
+
+
+archivos <- sqldf(c("UPDATE archivos
+                      SET imported = 1
+                      , Q = (select q from hq)
+                      WHERE EXISTS (SELECT 1
+                                    FROM albums
+                                    WHERE archivos.objeto = albums.objeto
+                                    )"
+                    , "select * from main.archivos"
+)
+)
+
+##Avance Importaciones
+archivos
+
+
+
+```
+
+##### Resumen avance
+
+```{r resumen6 , warning=FALSE, message=FALSE}
+##resumen albumes
+res <- sqldf("select case when origen = 'NA' then 'Pendiente' else origen end as origen, count(distinct(id)) Q from albumes group by origen")
+
+res
+
+```
+
+#### g) Solista
+
+Carpeta conteniendo 21 archivos txt que representan cada uno 1 album.
+
+```{r solista , warning=FALSE, message=FALSE}
+
+albums <- sqldf("select objeto from archivos where imported = 0 order by tipo limit 1")
+
+sol <- as.data.frame(list.dirs(paste0(outDir,albums)))
+
+ruta <-substr(paste0(sol, "/"), 3, stop = nchar(sol))
+
+
+##leo archivos del directorio
+filelist = list.files(path = paste0(sol),pattern = ".*.txt")
+
+##importo archivos como listas
+datalist = lapply(filelist, function(x)read.table(paste0(ruta,"/",x), header=T,sep ="\t",quote="")) 
+
+##transformo en DF
+solista = do.call("rbind", datalist) 
+
+
+##Origen suigeneris
+solista$origen <- "solista"
+
+##Formateo campo instrumentalness
+solista$instrumentalness <- format(as.numeric(as.character(solista$instrumentalness)), scientific = F)
+
+
+albumes <- sqldf("select a.ID, a.name, a.album_type, a.artist, a.categoria
+                 , coalesce(b.origen, a.origen) as origen from albumes a 
+                 left join (select album_id, max(origen) origen from 
+                 solista group by album_id) b on a.id = b.album_id")
+
+
+
+
+
+archivos <- sqldf(c("UPDATE archivos
+                      SET imported = 1
+                      , Q = (select count(*) from solista)
+                      WHERE EXISTS (SELECT 1
+                                    FROM albums
+                                    WHERE archivos.objeto = albums.objeto
+                                    )"
+                    , "select * from main.archivos"
+)
+)
+
+##Avance Importaciones
+archivos
+
+
+
+```
+
+##### Resumen avance
+
+```{r resumen7 , warning=FALSE, message=FALSE}
+##resumen albumes
+res <- sqldf("select case when origen = 'NA' then 'Pendiente' else origen end as origen, count(distinct(id)) Q from albumes group by origen")
+
+res
+
+```
+
+### 4) Unificación en Discografía
+
+se procede a la unificación de los archivos por origen de datos en un archivo sólido de nombre **Discografía** conteniendo 578 registros y 23 columnas (se agrega origen para garantizar la trazabilidad)
+
+Se utiliza SQL (sqldf) y se formatean, renombran y reubican los campos para hacerlos coincidir y evitar errores en el union all.
+
+```{r Discografía  , warning=FALSE, message=FALSE}
+##Uniendo Albumes para generar Discografía
+Discografía <- sqldf("select  name,	cast(track_number as int) track_number,	cast(null as int) as disc_number,	album_id,	album_name,	null as album_artist,	id,	cast(danceability as float) as danceability,	cast(energy as float) as energy,	cast(key as int) as key,	cast(loudness as decimal) as loudness,	cast(mode as bit) as mode,	cast(speechiness as float) speechiness,	cast(acousticness as float) acousticness,	cast(instrumentalness as float) instrumentalness,	cast(liveness as float) liveness,	cast(valence as float) valence,	cast(tempo as decimal) tempo,	cast(duration_ms as bigint) duration_ms,	cast(time_signature as int) as time_signature,	null as uri,	null as analysis_url,	origen
+                      from    album_la_maquina_de_hacer_pajaros
+                    UNION ALL
+                     select  name,	cast(track_number as int) track_number,	cast(null as int) as disc_number,	album_id,	album_name,	null as album_artist,	id,	cast(danceability as float) as danceability,	cast(energy as float) as energy,	cast(key as int) as key,	cast(loudness as decimal) as loudness,	cast(mode as bit) as mode,	cast(speechiness as float) speechiness,	cast(acousticness as float) acousticness,	cast(instrumentalness as float) instrumentalness,	cast(liveness as float) liveness,	cast(valence as float) valence,	cast(tempo as decimal) tempo,	cast(duration_ms as bigint) duration_ms,	cast(time_signature as int) as time_signature,	null as uri,	null as analysis_url,	origen
+                      from    album_peliculas
+                    UNION ALL
+                     select  name,	cast(track_number as int) as track_number,	cast(disc_number as int) disc_number,	album_id,	album_name,	album_artist,	id,	cast(danceability as float) as danceability,	cast(energy as float) as energy,	cast(key as int) as key,	cast(loudness as decimal) as loudness,	cast(mode as bit) as mode,	cast(speechiness as float) speechiness,	cast(acousticness as float) acousticness,	cast(instrumentalness as float) instrumentalness,	cast(liveness as float) liveness,	cast(valence as float) valence,	cast(tempo as decimal) tempo,	cast(duration_ms as bigint) duration_ms,	cast(time_signature as int) as time_signature,	uri,	analysis_url,	origen
+                      from    porsuigieco
+                    UNION ALL
+                     select  name,	cast(track_number as int) as track_number,	cast(disc_number as int) disc_number,	album_id,	album_name,	album_artist,	id,	cast(danceability as float) as danceability,	cast(energy as float) as energy,	cast(key as int) as key,	cast(loudness as decimal) as loudness,	cast(mode as bit) as mode,	cast(speechiness as float) speechiness,	cast(acousticness as float) acousticness,	cast(instrumentalness as float) instrumentalness,	cast(liveness as float) liveness,	cast(valence as float) valence,	cast(tempo as decimal) tempo,	cast(duration_ms as bigint) duration_ms,	cast(time_signature as int) as time_signature,	uri,	analysis_url,	origen
+                      from    sas
+                    UNION ALL
+                     select  cancion as name	, cast(nro_track as int) as track_number	, cast(nro_disco as int)  as disc_number	, album_id as album_id	, album_nombre as album_name	, album_artista as album_artist	, id as id	, cast(bailabilidad as float) as danceability	, cast(energia as float)  as energy	, cast(tonalidad as int) as key	, cast(volumen as decimal)  as loudness	, cast(modo as bit)  as mode	, cast(habladicidad as float) as speechiness	, cast(acusticidad as float) as acousticness	, cast(instrumentalidad as float) as instrumentalness	, cast(envivocidad as float) as liveness	, cast(positividad as float) as valence	, cast(tempo as decimal) as tempo	, cast(duracion_ms as bigint) as duration_ms	, cast(compas as int) as time_signature	, uri as uri	, analysis_url as analysis_url	, origen 
+                      from       serugiran
+                    UNION ALL
+                     select  name,	cast(track_number as int) as track_number,	cast(disc_number as int) disc_number,	album_id,	album_name,	album_artist,	id,	cast(danceability as float) as danceability,	cast(energy as float) as energy,	cast(key as int) as key,	cast(loudness as decimal) as loudness,	cast(mode as bit) as mode,	cast(speechiness as float) speechiness,	cast(acousticness as float) acousticness,	cast(instrumentalness as float) instrumentalness,	cast(liveness as float) liveness,	cast(valence as float) valence,	cast(tempo as decimal) tempo,	cast(duration_ms as bigint) duration_ms,	cast(time_signature as int) as time_signature,	uri,	analysis_url,	origen
+                      from    solista
+                    UNION ALL
+                      select  name,	cast(track_number as int) track_number,	cast(null as int) as disc_number,	album_id,	album_name,	null as album_artist,	id,	cast(danceability as float) as danceability,	cast(energy as float) as energy,	cast(key as int) as key,	cast(loudness as decimal) as loudness,	cast(mode as bit) as mode,	cast(speechiness as float) speechiness,	cast(acousticness as float) acousticness,	cast(instrumentalness as float) instrumentalness,	cast(liveness as float) liveness,	cast(valence as float) valence,	cast(tempo as decimal) tempo,	cast(duration_ms as bigint) duration_ms,	cast(time_signature as int) as time_signature,	uri,	analysis_url,	origen
+                      from    suigeneris
+
+                     ")
+
+
+
+
+```
+
+### 5) Análisis, limpieza y transformación de arhivos.
+
+#### Campo disc_number Incompleto:
+
+```{r actualiza campo disc number vacío, warning=FALSE, message=FALSE}
+Discografía <- sqldf(c("UPDATE Discografía
+                        SET disc_number = case  when album_name like '%Vol III%' then 3
+                                                when album_name like '%Vol. II%'then 2
+                                                when album_name like '%Vol.I%' then 1 
+                                                else 1 end 
+                      WHERE disc_number is null"
+                    , "select * from main.Discografía"
+)
+)
+
+
+```
+
+ver albumes que traen nro disco. Resto son 1.
+
+#### Campo album_artist incompleto:
+
+```{r Actualiza album_artist, warning=FALSE, message=FALSE}
+
+Discografía <- sqldf(c("UPDATE Discografía
+                        SET album_artist = case when origen in ('album_la_maquina_de_hacer_pajaros', 'album_peliculas') 
+                                                then 'La Máquina De Hacer Pájaros'
+                                                when origen ='suigeneris' then 'Sui Generis'
+                                                else album_artist end
+                                             WHERE album_artist is null"
+                    , "select * from main.Discografía"
+)
+)
+
+
+```
+
+Completar contra Origen.
+
+#### Campo uri incompleto y Campo analysis_url incompleto y exportar archivo final (resultado.txt:
+
+```{r uri y url, warning=FALSE, message=FALSE}
+
+Discografía <- sqldf(c("UPDATE Discografía
+                        SET uri = case  when uri is null 
+                                        then 'spotify:track:' || cast(id as char(20))
+                                        else uri end
+                        ,analysis_url = case  when analysis_url is null 
+                                        then 'https://api.spotify.com/v1/audio-analysis/' || cast(id as char(20))
+                                        else analysis_url end"
+                    , "select * from main.Discografía"
+)
+)
+
+###Mejor definicion de campos numericos
+
+Discografía$instrumentalness <- format(as.numeric(as.character(Discografía$instrumentalness)), scientific = F)
+Discografía$acousticness <- format(as.numeric(as.character(Discografía$acousticness)), scientific = F) 
+Discografía$danceability <- format(as.numeric(as.character(Discografía$danceability)), scientific = F)
+Discografía$energy <- format(as.numeric(as.character(Discografía$energy)), scientific = F)
+Discografía$loudness <- format(as.numeric(as.character(Discografía$loudness)), scientific = F)
+Discografía$liveness <- format(as.numeric(as.character(Discografía$liveness)), scientific = F)
+Discografía$valence <- format(as.numeric(as.character(Discografía$valence)), scientific = F)
+Discografía$tempo <- format(as.numeric(as.character(Discografía$tempo)), scientific = F)
+
+write_tsv(Discografía[c(-23)], "resultado.txt")
+
+```
+
+
+```{r limpieza de archivos y directorios, warning=FALSE, message=FALSE}
+rm(Discografía, suigeneris, serugiran, sas, solista, sol, res, album, album_la_maquina_de_hacer_pajaros, album_peliculas, albumes, albumid, archivos, categoria, datalist, datospajaros, datospeliculas, files, porsuigieco)
+
+file.remove("datos_charly.zip")
+unlink(outDir, recursive = TRUE)
+
+```
+
+
