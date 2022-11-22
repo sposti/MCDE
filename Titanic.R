@@ -161,3 +161,68 @@ str(df_train)
 df_train$rango_age <- as.factor(df_train$rango_age) 
 df_train$rango_age <- factor(df_train$rango_age, levels = c("niños", "adolescentes", "adultos", "mayores")) 
 df_train$ViajaSolo <- as.factor(df_train$ViajaSolo) 
+
+df_train <- sqldf(c("UPDATE df_train
+                     SET tICKET =  CASE WHEN cast(cast(Ticket AS INTEGER) AS TEXT) <> Ticket THEN substr(Ticket, instr(Ticket, ' ')+1, LENGTH(ticket)) 
+                                          ELSE Ticket
+                                          END
+                     WHERE EXISTS (SELECT 1
+                                    FROM df_train
+                                    where cast(cast(Ticket AS INTEGER) AS TEXT) <> Ticket 
+                     )"
+                    , "select * from main.df_train"
+)
+)
+
+
+df_train <- sqldf(c("UPDATE df_train
+                     SET tICKET =  substr(Ticket, instr(Ticket, ' ')+1, LENGTH(ticket)) 
+                      WHERE cast(cast(Ticket AS INTEGER) AS TEXT) <> Ticket                    
+                     AND EXISTS (SELECT 1
+                                    FROM df_train
+                                    where cast(cast(Ticket AS INTEGER) AS TEXT) <> Ticket 
+                     )"
+                    , "select * from main.df_train"
+)
+)
+
+df_train$Ticket <- as.numeric(df_train$Ticket)
+df_train$Ticket[is.na(df_train$Ticket)] <- 0
+
+A <- df_train
+
+
+
+##los que viajan acomppañados sin ser familia
+viajan_acompañados <- sqldf("select Ticket, count(*) q from df_train where Ticket >0 and viajasolo = 1 group by Ticket having(count(*)>1)")
+
+
+df_train <- sqldf(c("UPDATE df_train
+                      SET ViajaSolo = 0
+                      WHERE Ticket in (select Ticket from viajan_acompañados) 
+                      and EXISTS (SELECT 1
+                                    FROM viajan_acompañados
+                                    where viajan_acompañados.Ticket = df_train.Ticket
+                                    
+
+                                    )"
+                    , "select * from main.df_train"
+)
+)
+
+##los que viajan acomppañados misma cabina
+misma_cabina <- sqldf("select Cabin from df_train where cabin is not null and cabin <>'' and viajasolo = 1 group by cabin having(count(*)>1)")
+
+df_train <- sqldf(c("UPDATE df_train
+                      SET ViajaSolo = 0
+                      WHERE Cabin in (select Cabin from misma_cabina) 
+                      and EXISTS (SELECT 1
+                                    FROM misma_cabina
+                                    where misma_cabina.Cabin = df_train.Cabin
+                                    
+
+                                    )"
+                    , "select * from main.df_train"
+)
+)
+
