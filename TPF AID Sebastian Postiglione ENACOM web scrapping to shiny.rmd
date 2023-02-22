@@ -1,0 +1,1372 @@
+---
+title: "Trabajo Final AID - ENACOM"
+author: "Postiglione, Sebastián"
+date: "2023-02-15"
+output:
+  
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    theme: spacelab
+runtime: shiny
+
+---
+
+```{r bibliotecas, message=FALSE, warning=FALSE, include=FALSE}
+
+paquetes <- c("devtools", "lintr", "slickR","knitr", "dplyr","janitor","ggplot2","kableExtra","plotly","sqldf","httr","jsonlite","readxl","rvest","stringr","XML","xml2","tidyverse","tidyr","stringi","gdata","sqldf",  "colorspace","readr", "readxl", "dplyr", "tibble", "ggplot2", "cowplot", 
+    "ggridges", "ggbeeswarm", "GGally", "rgl", "treemapify", 
+    "vcd", "ggcleveland", "corrplot", "flexdashboard", 
+               "lubridate", "DT", "DescTools")
+
+
+
+# Instalar si no están
+instalados <- paquetes %in% rownames(installed.packages())
+if (any(instalados == FALSE)) {
+  install.packages(paquetes[!instalados])
+}
+
+# Cargarlos
+invisible(lapply(paquetes, library, character.only = TRUE))
+
+theme_set(theme_grey())
+
+rm(instalados, paquetes)
+
+```
+
+```{r variables generales, message=FALSE, warning=FALSE, include=FALSE}
+rm(list = ls()) ##limpio area de trabajo
+options(warn=-1) ##evito los warnings 
+
+```
+
+
+# Definición del Trabajo
+
+Unificar y disponibilizar un origen de datos público que suele ser
+difícil de localizar y algo díscolo de utilizar e interpretar:
+
+#### Plan Fundamental de Numeración Nacional (PFNN) ENACOM para números de telefonos fijos y celulares.
+
+```{r Importacion archivo, message=FALSE, warning=FALSE, include=FALSE}
+
+outDir<-"./" 
+call <- "https://api.datosabiertos.enacom.gob.ar/api/v2/dashboards/NUMER.json/?auth_key=2AwR3iSiYHRmE6LejcvCmxcigZF9zQ6cC7op4gF2"
+
+# Si falla la APIKEy: https://datosabiertos.enacom.gob.ar/developers/
+
+# TRAIGO DETALLES DE LA API
+enacom <- GET(url = call)
+
+# Encontrar URL de descarga xls misma base que xlsx
+urlxls <- content(enacom)$resources[[grep("xls", content(enacom)$resources)]]$revision$end_point
+
+# DOWNLOAD ARCHIVO RAW
+url_archivo <- urlxls
+archivo <- "Numeracion_Geografica.xlsx"
+download.file(url_archivo, archivo, mode = "wb")
+
+
+# IMPORTO A R
+Numeracion_Geografica <- read_excel(paste0(outDir, "Numeracion_Geografica.xlsx"))
+#View(Numeracion_Geografica)
+
+Numeracion_Geografica  <- Numeracion_Geografica[,-8]
+Numeracion_Geografica  <- Numeracion_Geografica[,-7]
+
+rm(enacom, archivo, call, url_archivo, urlxls)
+
+
+#############INICIO ddn#####
+
+ddn <- setNames(data.frame(matrix(ncol = 4, nrow = 0)), c('DDN','Localidad','Provincia', 'pagina'))
+
+ddn[, c(1,4)] <- sapply(ddn[, c(1,4)], as.integer)
+ddn[, c(2:3)] <- sapply(ddn[, c(2:3)], as.character)
+
+ddn2 <- ddn
+
+i <- 1
+
+#nrow(ddn2[ddn2$DDN == "Sin resultados encontrados", ])
+
+while (nrow(ddn2[ddn2$DDN == "Sin resultados encontrados", ])==0) {
+  ddn2 <- as.data.frame(html_table(html_nodes(read_html(paste0("https://www.enacom.gob.ar/areaslocales/busqueda/", i),encoding="iso-8859-1"), "body"), header = FALSE, convert = TRUE))[-11,]
+  colnames(ddn2) <- c('DDN','Localidad','Provincia')
+  ddn2$pagina <- i
+  ddn2$DDN <- as.integer(ddn2$DDN)
+  ddn2$pagina <- as.integer(ddn2$pagina)
+  ddn <- merge(ddn, filter(ddn2, !is.na(DDN)), all = TRUE)
+  i = i+1  
+}
+
+
+ddn <- ddn[, -4]
+
+Numeracion_Geografica$LOCALIDAD[Numeracion_Geografica$LOCALIDAD == "CORONEL MON"] <- "CORONEL MOM"
+Numeracion_Geografica$LOCALIDAD[Numeracion_Geografica$LOCALIDAD == "DUMESMIL"] <- "DUMESNIL"
+ddn$Localidad[ddn$Localidad == "BALDE DE LEYES SSPLD"] <- "BALDE DE LEYES"
+ddn$Localidad[ddn$Localidad == "EL \"\"49\"\" (Km. 49)"] <- "EL 49 (Km. 49)"
+Numeracion_Geografica$LOCALIDAD[Numeracion_Geografica$LOCALIDAD == "EL \"49\" (Km. 49)"] <-"EL 49 (Km. 49)"
+
+
+########FIN ddn##############
+
+rm(ddn2, enacom, archivo, call, i, url_archivo, urlxls )
+
+
+```
+
+En Argentina los números de teléfonos tienen un largo estandarizado de
+10 dígitos, siendo el primer dígito el que determina qué el tipo de
+numeración se está utilizando, a saber:
+
++---------------+------------------------------+
+| Primer Dígito | Corresponde a:               |
++===============+:=============================+
+| 0             | Acceso a servicios de red,   |
+|               | p. **ej.: larga distancia**  |
++---------------+------------------------------+
+| 1, 2 y 3      | Discado Directo Interurbano. |
+|               | Siendo\                      |
+|               | **AMBA** = **1** p. ej.:     |
+|               | 1156908568 (UA Pilar)\       |
+|               | **Área interior sur** =      |
+|               | **2** p. ej.: 2914595000     |
+|               | (UNS Bahía Blanca)\          |
+|               | **Área interior norte** =    |
+|               | **3** p. ej.: 3415223000 (U. |
+|               | Austral Rosario)             |
++---------------+------------------------------+
+| 6 y 8         | Numeración no Geográfica. p. |
+|               | ej.: 8002228648 (UA Carreras |
+|               | de Grado)                    |
++---------------+------------------------------+
+| 4,5,7,9       | Reservados                   |
++---------------+------------------------------+
+
+El objetivo del presente trabajo es identificar las características
+geográficas y ampliadas de números telefónicos con Numeración Geográfica
+asignada (Discado Directo Interurbano) que es la asignada a una zona
+geográfica determinada, no se analizarán las características no
+geográficas.
+
+Un número de teléfono en argentina consta de Indicativo Interurbano +
+Número Abonado:
+
+| INDICATIVO INTERURBANO | NÚMERO DE ABONADO |
+|:-----------------------|:------------------|
+| AB                     | CDEFGHIJ          |
+| ABC                    | DEFGHIJ           |
+| ABCD                   | EFGHIJ            |
+
+: **NUMERACIÓN GEOGRÁFICA**
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+ddi <- 341
+ddi_max <-format(as.integer(strrep(9, 10-nchar(ddi)))+1, big.mark = ".", scientific = F)
+
+```
+
+Analizando brevemente la estructura de los ANIs (Automatic Number
+Identification) en Argentina, son 10 dígitos separados, inicialmente, en
+2 componentes (más adelante veremos que el segundo componente se
+subdivide). De usos y constumbres sabemos que, p. ej.: el DDI (antiguo
+DDN) 11 corresponde a "Buenos Aires", 341 a "Rosario" y, por ejemplo,
+"3476" a "San Lorenzo". A simple vista podemos pensar que un DDN más
+corto se relaciona con un área geográfica con mayor cantidad de
+habitantes (pudiendo ser por mayor densidad de habitantes, extensión
+geográfica o combinaciones de ambas) ya que, al ocupar menor cantidad de
+dígitos, deja libres más digitos para componer el Número del Abonado.
+Siguiendo con el análsis, por ejemplo para 341, la cantidad máxima de
+líneas asignables o lote máximo de ANIS sería: **`r ddi_max`**
+
+Se procede a la importación de set de datos publicado por ENACOM en su
+web. La misma se encuentra repartida en varios orígenes de datos, siendo
+los más interesantes los que contienen las asignaciones de Numercación
+Geográfica y el que relaciona los Indicativos Interurbanos o códigos de
+área con área local y provincia.\
+Numeración Geográfica:
+<https://www.enacom.gob.ar/public/datosabiertos/Numeracion/Numeracion_Geografica.xlsx>
+
+Contenido:
+
+```{r}
+
+
+kable_styling(
+              kable(summary(Numeracion_Geografica), digits = 3, row.names = FALSE, align = c("l","l","l","l","l"),
+              caption = NULL, format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE) 
+
+```
+
+Indicativos Interurbanos:
+
+La información se encuentra publicada en
+<https://enacom.gob.ar/indicativos-interurbanos_p143>\
+en formato tabla html embebida por lo que se procede al web scrapping de
+la misma. Se omite el método de navegación página por página por
+resultar engorrosa la instalación de RSelenium y por haber encontrado
+una opción más simple mediante el análisis del código fuente de la web
+origen a través del Fetch/XHR.
+
+Contenido:
+
+```{r}
+
+
+kable_styling(
+              kable(summary(ddn), digits = 3, row.names = FALSE, align = "l",
+              caption = NULL, format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE) 
+```
+
+#### Consideraciones iniciales:
+
+La información se encuentra dividida en 2 dataframes; en el primero y
+mas populoso (Numeración Geográfica) se muestran las asignaciones a
+Operadores telefónicos según tipo de Servicio, Modalidad, Localidad,
+Indicativo (DDI) y Bloque (digitos posteriores al DDI). En el segundo,
+obran las relaciones entre DDI, Aréas Locales (geográficas) y
+provincias.
+
+Se omiten los datos inciales de Fecha de Asignacion y Resolución (para
+Numeración Geográfica) y Pagina (para DDI) ya que se trata de un cursor
+de control del proceso de web scrapping.
+
+#### Objetivo:
+
+La idea principal es poder identificar Operador, Área Geográfica y tipo
+de servicio de cualquier número de telefono de Argentina, sea fijo o
+celular y presentar estadísticas del sistema en general.
+
+Tomando por ejemplo el celular 3413096497 lo deseable sería identificar
+el Operador (inicial), la modalidad (tipo de servicio) y el área
+geográfica de esa asignación. De este ejemplo el resultado es:
+
+Operador: TELECOM ARGENTINA S.A. Servicio: STM/PCS (celular) Modalidad:
+CPP (Calling Party Pays / el que llama, paga) Localidad: Rosario
+Indicativo: 341 Bloque: 309 (6497 este residuo o lote es analizado más
+adelante ya que nos dá una pista respecto al tamaño de lote asignado a
+cada prestador) Área: Área interior norte
+
+**Resumen previo conceptos**: Si bien con la tabla incial de ENACOM se
+pueden filtrar e identificar Operador, servicio, modalidad y Localidad
+es mi intención agregar información útil como los formatos societarios
+de los Operadores, los tipos de servicios prestados, validar la
+provincia y área geográfica y dotar de información a nivel geográfico
+para hacer comparativas contra datos preeliminares del censo 2022.
+
+#### Análisis inicial de variables
+
+#### Campo Operador:
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+Numeracion_Geografica$OPERADOR_ok <- case_when(
+  Numeracion_Geografica$OPERADOR == "TELECOM ARGENTINA S.A." ~ "TELECOM",
+  Numeracion_Geografica$OPERADOR == "AMX ARGENTINA S.A." ~ "CLARO",
+  Numeracion_Geografica$OPERADOR == "TELMEX ARGENTINA S.A." ~ "CLARO",
+  Numeracion_Geografica$OPERADOR == "TELEFONICA MOVILES ARGENTINA S.A." ~ "TELEFONICA",
+  Numeracion_Geografica$OPERADOR == "TELEFONICA DE ARGENTINA S.A." ~ "TELEFONICA",
+  Numeracion_Geografica$OPERADOR == "COMPAÑIA DE RADIOCOMUNICACIONES MOVILES S.A." ~ "TELEFONICA",
+  Numeracion_Geografica$OPERADOR == "NSS S.A." ~ "IPLAN",  
+  TRUE ~ as.character(Numeracion_Geografica$OPERADOR)
+)
+
+
+n <- sqldf("select operador_ok, count(1) as Asignaciones from  Numeracion_Geografica group by operador_ok order by count(1) desc")
+
+
+resumen_operador <- sqldf("select OPERADOR_ok as Operador
+                                  , sum(Asignaciones) as Asignaciones
+                                  , sum(Asignaciones)*1.0/(select sum(asignaciones) from n)*1.0 as Porcentaje
+                                  , sum(sum(Asignaciones)*1.0/(select sum(asignaciones) from n)*1.0) over (order by sum(Asignaciones) desc) as                                        PorcentajeAcumulado
+                          FROM    n 
+                          GROUP   BY OPERADOR_ok 
+                          ORDER   BY sum(Asignaciones) DESc
+                          ")
+
+
+Operadores_01 <-sqldf("select * from resumen_operador  where PorcentajeAcumulado<0.90 
+       
+          union all
+       
+       select 'Resto'  as Operador , sum(Asignaciones) as Asignaciones, sum(Porcentaje) as Porcentaje, max(PorcentajeAcumulado) as PorcentajeAcumulado
+            from resumen_operador  where  PorcentajeAcumulado>=0.90")
+
+
+rm(resumen_operador, resumen_operador_2)
+
+```
+
+```{r}
+
+kable_styling(
+              kable(Operadores_01, digits = 3, row.names = FALSE, align = "lrrr",
+              caption = "Participación Operadores en Asignaciones Numéricas", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+
+#footnote(knitr::kable(Operadores_01, "html"), alphabet = c("Note a", "Note b"))
+
+
+```
+
+#### Campo Servicio:
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+servicio <- sqldf("select servicio, count(1) q from Numeracion_Geografica group by servicio")
+
+```
+
+Los diferentes tipos de Servicios son resumidos en 3 tipos de Servicio
+según lo que consta en: <https://www.enacom.gob.ar/telefonia-movil_p133>
+
+**Celulares**: Servicio de Telefonía Móvil (STM), Servicio de
+Radiocomunicaciones Móvil Celular (SRMC), Servicio de Comunicaciones
+Personales (PCS), Servicio de Comunicaciones Móviles Avanzadas (SCMA),
+Operador Móvil Virtual (OMV). SAP y SRCE son incluidas como celulares.
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+Numeracion_Geografica$Tipo_Servicio <- case_when(
+  Numeracion_Geografica$SERVICIO %like% "%PCS%" ~ "Celular",
+  Numeracion_Geografica$SERVICIO %like% "%STM%" ~ "Celular",
+  Numeracion_Geografica$SERVICIO %like% "%SRMC%" ~ "Celular",
+  Numeracion_Geografica$SERVICIO %like% "%SCMA%" ~ "Celular",
+  Numeracion_Geografica$SERVICIO %like% "%OMV%" ~ "Celular",
+  Numeracion_Geografica$SERVICIO %like% "%SAP%" ~ "Celular",
+  Numeracion_Geografica$SERVICIO %like% "%SRCE%" ~ "Celular",
+  Numeracion_Geografica$SERVICIO %like% "%SBT%" ~ "Fijo",
+  Numeracion_Geografica$SERVICIO %like% "%TELSAT%" ~ "Satelital",
+  TRUE ~ as.character("")
+)
+
+
+
+```
+
+```{r}
+
+kable_styling(
+              kable(
+sqldf("select Operador_ok AS Operador
+            , Tipo_Servicio as [Tipo Servicio], count(1) Q
+            , count(1)*1.0/(select count(1) from Numeracion_Geografica where                                       Tipo_Servicio = 'Celular' )*1.0 as Porcentaje
+            , sum(count(1)*1.0/(select count(1) from Numeracion_Geografica where                                       Tipo_Servicio = 'Celular' )*1.0) over (order by count(1) desc) as                                        [Porcentaje Acumulado]
+      from Numeracion_Geografica
+      where Tipo_Servicio = 'Celular'
+      group by Operador_ok, Tipo_Servicio order by q desc"), digits = 3, row.names = FALSE, align = "llrrr",
+              caption = "Participación Operadores en Asignaciones Celulares", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+
+
+
+
+```
+
+Se observa que las asignaciones del espetro celular están concentradas
+en las 3 grandes empresas del mercado: Claro, Telecom y Telefónica.
+
+```{r}
+kable_styling(
+              kable(
+sqldf("select Operador_ok AS Operador
+            , Tipo_Servicio as [Tipo Servicio], count(1) Q
+            , count(1)*1.0/(select count(1) from Numeracion_Geografica where                                       Tipo_Servicio = 'Fijo' )*1.0 as Porcentaje
+            , sum(count(1)*1.0/(select count(1) from Numeracion_Geografica where                                       Tipo_Servicio = 'Fijo' )*1.0) over (order by count(1) desc) as                                        [Porcentaje Acumulado]
+      from Numeracion_Geografica
+      where Tipo_Servicio = 'Fijo'
+      group by Operador_ok, Tipo_Servicio order by q desc
+      limit 20"), digits = 3, row.names = FALSE, align = "llrrr",
+              caption = "Participación Operadores en Asignaciones Fijas (20 principles 80%)", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+```
+
+En cuanto a las asignaciones de telefonía fija, si bien es predominante
+la presencia de 2 grandes comañías, Telecom y Telefonica con el 29,3%,
+el 25,6% acumulado más del 50% de las asignaciones, vemos que existe una
+atomización respetable del resto de las asginaciones.
+
+#### Campo Modalidad:
+
+Se dividen en:
+
+-   Básica: se trata del servicio Básico de telefonía fija.
+
+-   CPP: Abonado que llama, paga o Calling Party Pays es la modalidad
+    característica y principal de los servicios de telefonía celular en
+    nuestro país.
+
+-   MPP: Modalidad Abonado Llamado Paga
+
+-   Satelital: Modalidad agregada para evitar el NA en la categoría de
+    prestadores Satelitales que no se encuadran dentro de las
+    anteriores.
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+Numeracion_Geografica$MODALIDAD[is.na(Numeracion_Geografica$MODALIDAD) == TRUE] <- "SATELITAL"
+
+sqldf("select Modalidad, COUNT(1) Q
+      from Numeracion_Geografica
+      group by Modalidad")
+```
+
+#### Campo Localidad:
+
+```{r}
+n_localidad <- n_distinct(Numeracion_Geografica$LOCALIDAD)
+
+Localidades <- sqldf("select LOCALIDAD, COUNT(1) Q, COUNT(1)*1.0/(SELECT COUNT(1) FROM Numeracion_Geografica)*1.0 AS PORCENTAJE FROM Numeracion_Geografica GROUP BY LOCALIDAD ORDER BY Q DESC")
+
+
+kable_styling(
+              kable(head(Localidades), digits = 3, row.names = FALSE, align = "lrrr",
+              caption = "Participacion Operadores en Asignaciones Numericas", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+```
+
+El listado de Enacom (Numeración Geográfica) tiene informadas
+`n_localidad` localidades distintas.
+
+Vemos que el primer registro corresponde a AMBA, que en sí no es una
+localidad sino una zona urbana común conformada por la ciudad de Buenos
+Aires y los siguientes municipios: Almirante Brown, Avellaneda,
+Berazatagui, Berisso, Brandsen, Campana, Cañuelas, Ensenada, Escobar,
+Esteban Echeverría, Exaltación de la Cruz, Ezeiza, Florencio Varela,
+General Las Heras, General Rodríguez, General San Martín, Hurlingham,
+Ituzaingó, José C. Paz, La Matanza, Lanús, La Plata, Lomas de Zamora,
+Luján, Marcos Paz, Malvinas Argentinas, Moreno, Merlo, Morón, Pilar,
+Presidente Perón, Quilmes, San Fernando, San Isidro, San Miguel, San
+Vicente, Tigre, Tres de Febrero, Vicente López, y Zárate.
+
+Numeración Geográfica carece del dato Provincia, antes de continuar con
+el análisis del resto de las variables, se incorpora el dato provincia
+mediante el uso del segundo origen de datos scrappeado de ENACOM, ddn.
+
+```{r}
+
+n_localidad_ddn <- n_distinct(ddn$Localidad)
+
+Localidades_ddn <- distinct(ddn, Localidad, .keep_all = FALSE)
+
+```
+
+A simple vista pareciera que, tratándose de sets de datos de un mismo
+origen, los `n_localidad` registros distintos de Localidades contendiso
+en Numeración Geográfica podrían coincidir casi a la perfección con los
+`n_localidad_ddn` registros de localidades de ddn. Pero, aquí trabajamos
+con conjuntos, lamentablemente no es tan simple como sumar y restar y
+buscar la diferencia:
+
+```{r}
+diferencias_localidades <- sqldf("select * from (
+      select Loc_NG as Localidad, 'Num.Geografica' as Origen from (
+      select * from (select Localidad as Loc_NG from Numeracion_Geografica group by Localidad) a
+      full join (select Localidad as loc_ddn from ddn group by Localidad) b on Loc_NG = loc_ddn
+      where Loc_NG is null or loc_ddn is null)
+      where Loc_NG is not null
+    union all
+      select Loc_ddn as Localidad, 'ddn' as Origen from (
+      select * from (select Localidad as Loc_NG from Numeracion_Geografica group by Localidad) a
+      full join (select Localidad as loc_ddn from ddn group by Localidad) b on Loc_NG = loc_ddn
+      where Loc_NG is null or loc_ddn is null)
+      where Loc_ddn is not null) t
+      order by Localidad, Origen
+")
+
+require(knitr)
+require(kableExtra)
+kable_styling(
+              kable((diferencias_localidades), digits = 3, row.names = FALSE, align = "lrrr",
+              caption = "Diferencias Localidades", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+
+n_diferencias_localidades <- n_distinct(diferencias_localidades$Localidad)
+
+```
+
+Las principales diferencias radican en signos de puntación y espaciados
+dobles. También se observar entre paréntesis la identificación de
+Provincia para localidades homónimas, cosa de la que se puede prescindir
+ya que ambos datasets tiene su join natural por el campo Discado Directo
+Interurbano (INDICATIVO para Numeración Geográfica y DDN para ddn).
+
+A continuación se procede a la limpieza de los campos y generación de
+campos para enriquecer Numeración geográfica con el dato provincia:
+
+```{r}
+# VALIDACION CRUZADA DDN Y NRO GEOG
+Numeracion_Geografica <- Numeracion_Geografica %>%
+  mutate(Numeracion_Geografica
+    , localidad_ok = toupper(str_replace_all(
+      string = str_split(string = LOCALIDAD,
+                         pattern = '\\(',
+                         simplify = TRUE
+      )[,1],    # Objeto original
+      pattern = " ",     # Texto que deseo reemplazar
+      replacement = ""   # Nuevo texto
+    )))
+
+ddn <- ddn %>%
+  mutate(ddn
+    , localidad_ok = toupper(str_replace_all(
+      string = str_split(string = Localidad,
+                         pattern = '\\(',
+                         simplify = TRUE
+      )[,1],    # Objeto original
+      pattern = " ",     # Texto que deseo reemplazar
+      replacement = ""   # Nuevo texto
+    )))
+
+
+ddn <- ddn %>% 
+  group_by(DDN, localidad_ok, Provincia) %>% 
+  summarise(Localidad = max(Localidad), .groups = 'drop')
+
+
+solido <- left_join(Numeracion_Geografica, ddn, by=c("INDICATIVO"="DDN", "localidad_ok" = "localidad_ok")) %>%
+  mutate(
+        Localidad = toupper(
+                            str_split(
+                                      string = LOCALIDAD,
+                                      pattern = '\\(',
+                                      simplify = TRUE
+                                      )[,1]
+                            )
+        ) %>% rename("ddn" =  "INDICATIVO") %>% mutate(BIN = paste0(ddn, BLOQUE), ancho_Bin = nchar(BIN))
+
+names(solido)[4] = "Localidad_Original"
+
+
+
+provincias_n <- solido %>% group_by(Provincia) %>% 
+  summarise(Q_ddn = n_distinct(ddn)
+            ,Q_localidades = n_distinct(localidad_ok) )
+
+
+
+kable_styling(
+              kable((provincias_n), digits = 3, row.names = FALSE, align = "lrrr",
+              caption = "Asignaciones por provincia y localidades", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+
+```
+
+AMBA está contada como 1 localidad pero en realidad está compuesta por
+41 municipios.
+
+#### Campo ddn:
+
+Según se desprende de los cuadros debajo detallados, para un ddn
+determinado (característica Interurbana, p. ej.: 3382) se pueden hallar
+diferentes correspondencias con Localidades y provincias; sin embargo de
+esto, es de suponer que un ddn hace referencia o representa a un área
+geográfica determinada (localidad cercanas y/o, provincias que limitan.
+
+```{r}
+ddn_multiple_pcia <- sqldf("select ddn, group_concat(provincia, ', ') as Provincias
+from (
+					select A.ddn, A.provincia from solido a 
+					inner join 
+          					(select  ddn, count(distinct(provincia)) q from solido group by ddn having(count(distinct(provincia))>1)
+          					order by count(distinct(provincia)) desc
+          					) b on a.DDN = b.DDN
+					group by a.DDN, A.provincia
+					ORDER by a.DDN, A.provincia) 
+group by ddn")
+
+
+
+kable_styling(
+              kable((ddn_multiple_pcia), digits = 3, row.names = FALSE, align = "rl",
+              caption = "Mismo DDN,  distintas Provincias", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+
+```
+
+```{r}
+
+resumen_ddn_loc <- sqldf("select ddn, count(distinct(Localidad_ok)) as Q_localides from solido group by ddn order by Q_localides desc ")
+
+
+kable_styling(
+              kable(head(resumen_ddn_loc), digits = 3, row.names = FALSE, align = "rr",
+              caption = "Mismi DDN distintas localidades", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+```
+
+#### Campo BLOQUE:
+
+El BLOQUE es un número entero de 2 a 5 posiciones o digitos que componen
+el inicio del Número de Abonado, situándose a continuación de los
+dígitos de DDN o INDICATIVO geográfico.
+
+Sabemos que el Plan Fundamental de Numeración Nacional (PFNN) establece
+la longitud máxima de los ANIs en argentina (largo = 10), conocemos el
+largo de cada DDN y también el largo de cada bloque de asignacion.
+
+Corroboración de Clave Primaria para campos DDN + Bloque:
+
+```{r}
+
+CompruebaPK <- if (sqldf("select count(1) q from (select ddn, bloque from solido group by ddn, bloque)")-sqldf("select count(1) q from solido")==0)
+{print("ok")
+}else
+{print("no es pk")
+}  
+
+```
+
+Se corrobora la unicidad para la dupla ddn+bloque. A continuación se
+genera campo BIN (ddn + bloque) y su ancho. La razón de esto es intentar
+determinar el tamaño de cada lote de asignación de números telefónicos,
+por ejemplo, siguiendo con el ejemplo de mi celular: 3413096497:
+
+```{r}
+
+
+
+
+C<-sqldf("select	  '3413096497' as ANI, Operador_ok as Operador
+                    , Tipo_Servicio as [Tipo Servicio]
+                    , Modalidad
+                    , Localidad
+                    , Provincia
+                    , cast('1'||replicate('0', 10-ancho_Bin) as integer) as [Tamaño Lote]
+        from	  solido
+        where	(
+        		    (SUBSTRING(ANI, 1, 2) = ddn AND SUBSTRING(ANI, 3, 4) = BLOQUE)
+        		    OR
+        		    (SUBSTRING(ANI, 1, 2) = ddn AND SUBSTRING(ANI, 3, 5) = BLOQUE)
+      		    )
+        		OR 
+        		  (
+          		(SUBSTRING(ANI, 1,3) = ddn AND SUBSTRING(ANI, 4, 3) = BLOQUE)
+          		OR
+          		(SUBSTRING(ANI, 1,3) = ddn AND SUBSTRING(ANI, 4, 4) = BLOQUE)
+          		OR
+          		(SUBSTRING(ANI, 1,3) = ddn AND SUBSTRING(ANI, 4, 5) = BLOQUE)
+          		)
+        		OR
+          		(
+          		(SUBSTRING(ANI, 1,4) = ddn AND SUBSTRING(ANI, 5, 2) = BLOQUE)
+          		OR
+          		(SUBSTRING(ANI, 1,4) = ddn AND SUBSTRING(ANI, 5, 2) = BLOQUE)
+          		OR
+          		(SUBSTRING(ANI, 1,4) = ddn AND SUBSTRING(ANI, 5, 4) = BLOQUE)
+          		)"
+)
+
+
+kable_styling(
+              kable(C, digits = 3, row.names = FALSE, align = "clllllr",
+              caption = "Ejemplo Informacion ANI + Determinacion Lotes", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+
+
+```
+
+En base a lo analizado, el número máximo de asignaciones teóricas de
+lotes de ANIS en Argentina, dadas las asignaciones de áreas actuales (1
+= AMBA, 2 = Zona Sur y 3 = Zona Norte) serían de:
+
+```{r}
+asignaciones_teoricas <- sqldf("select	'AMBA' as Zona
+          		,cast(max(cast(ddn as integer)) || replicate('9', 10-length(max(cast(ddn as integer)))) as integer) as [ANI max]
+              ,cast(min(cast(ddn as integer)) || replicate('0', 10-length(min(cast(ddn as integer)))) as integer) as [ANI min]                
+          		,CAST(max(cast(ddn as integer)) || replicate('9', 10-length(max(cast(ddn as integer)))) - min(cast(ddn as integer)) || replicate('0',                    10-length(min(cast(ddn as integer))))  as integer) as [ANI lote]                
+              from    solido 
+              where substring(cast(ddn as varchar(10)), 1, 1) = '1'
+      union all
+      select	'Sur' as Zona
+          		,cast(max(cast(ddn as integer)) || replicate('9', 10-length(max(cast(ddn as integer)))) as integer) as [ANI max]
+              ,cast(min(cast(ddn as integer)) || replicate('0', 10-length(min(cast(ddn as integer)))) as integer) as [ANI min]
+ 	            ,CAST(max(cast(ddn as integer)) || replicate('9', 10-length(max(cast(ddn as integer)))) - min(cast(ddn as integer)) || replicate('0',                    10-length(min(cast(ddn as integer))))  as integer) as [ANI lote]   
+              from    solido 
+              where substring(cast(ddn as varchar(10)), 1, 1) = '2'
+      union all
+      select	'Norte' as Zona
+          		,cast(max(cast(ddn as integer)) || replicate('9', 10-length(max(cast(ddn as integer)))) as integer) as [ANI max]
+              ,cast(min(cast(ddn as integer)) || replicate('0', 10-length(min(cast(ddn as integer)))) as integer) as [ANI min]  
+            	,CAST(max(cast(ddn as integer)) || replicate('9', 10-length(max(cast(ddn as integer)))) - min(cast(ddn as integer)) || replicate('0',                    10-length(min(cast(ddn as integer))))  as integer) as [ANI lote]   
+              from    solido 
+              where substring(cast(ddn as varchar(10)), 1, 1) = '3'
+    ")
+
+
+asignaciones_teoricas_resu <- asignaciones_teoricas %>%
+            bind_rows(summarise(., across(where(is.numeric), sum),
+                                   across(where(is.character), ~'Total')))
+
+asignaciones_teoricas_resu$`ANI lote` <- format(asignaciones_teoricas_resu$`ANI lote`, big.mark = ".", scientific = FALSE)
+
+	
+asignaciones_teoricas_resu[4,2]<- 3894000000
+asignaciones_teoricas_resu[4,3]<- 1100000000
+
+solido$zona <- case_when(substr(solido$ddn, 1,1) == '1' ~ 'AMBA',
+                         substr(solido$ddn, 1,1) == '2' ~ 'Sur',
+                         substr(solido$ddn, 1,1) == '3' ~ 'Norte',
+                         TRUE ~ ''
+)
+solido$lote<-as.integer(paste0(1,strrep(0, 10-solido$ancho_Bin)))
+
+
+asignaciones_reales <- sqldf("select Zona, sum(lote) as Lotes from solido group by Zona order by Zona")
+
+asignaciones_realess_resu <- asignaciones_reales %>%
+            bind_rows(summarise(., across(where(is.numeric), sum),
+                                   across(where(is.character), ~'Total')))
+asignaciones_realess_resu$Lotes <- format(asignaciones_realess_resu$Lotes, big.mark = ".", scientific = FALSE)
+
+kable_styling(
+              kable(asignaciones_teoricas_resu, digits = 3, row.names = FALSE, align = "lrrr", big.mark = '.',
+              caption = "ANIs asignables x Zona (teórico)", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+
+
+
+
+
+```
+
+Y el cupo máximo actual, el máximo número de ANIs que podrían darse dado
+el estado actual de los lotes asignados, es de:
+
+```{r}
+
+
+kable_styling(
+              kable(asignaciones_realess_resu, digits = 3, row.names = FALSE, align = "lrrr", big.mark = '.',
+              caption = "Maximos ANIs asignables x Zona (real)", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+```
+
+De los 2 cuadros anteriores podemos considerar que, de momento, y no
+siendo que ENACOM fuere a asignar números para alguna tecnólogía nueva o
+relacionada a ip, las asignaciones al año 2021[^1] eran de:
+
+[^1]: <https://www.telesemana.com/panorama-de-mercado/argentina/>
+
+-   Claro: 21.983.288
+
+-   Personal: 20.130.000
+
+-   Movistar: 16.291.546
+
+-   **Total: 58.404.834**
+
+#### Datos Censo 2022.
+
+#### Habitantes x provincia:
+
+Se procede a importar desde INDEC
+("[https://www.indec.gob.ar/ftp/cuadros/poblacion/cnphv2022"](https://www.indec.gob.ar/ftp/cuadros/poblacion/cnphv2022_resultados_provisionales.xlsx%22)[)\
+Datos](https://www.indec.gob.ar/ftp/cuadros/poblacion/cnphv2022%22)
+
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+
+# DOWNLOAD ARCHIVO CENSO
+url_censo <- "https://www.indec.gob.ar/ftp/cuadros/poblacion/cnphv2022_resultados_provisionales.xlsx"
+archivo <- "censo.xlsx"
+download.file(url_censo, archivo, mode = "wb")
+
+# IMPORTO A R
+CENSO_PAIS <- read_excel(archivo, sheet = "Cuadro 2", skip = 4) 
+colnames(CENSO_PAIS) <- c('Jurisdicción','Total','Hombres', 'Mujeres', 'X') 
+CENSO_PAIS <- CENSO_PAIS[complete.cases(CENSO_PAIS[, 2]),]
+CENSO_PAIS <- CENSO_PAIS %>% 
+  mutate(CENSO_PAIS , Provincia = toupper(stri_trans_general(CENSO_PAIS$Jurisdicción,"Latin-ASCII")))
+
+
+CENSO_PAIS$Provincia <- str_remove_all(
+  string = CENSO_PAIS$Provincia,
+  pattern = "[:punct:]"
+)
+
+
+CENSO_PAIS$Provincia <- str_remove_all(
+  string = CENSO_PAIS$Provincia,
+  pattern = "\n"
+)
+
+
+CENSO_PAIS$Provincia <- str_replace_all(
+  string = CENSO_PAIS$Provincia, 
+  pattern = "\r", 
+  replacement = " "
+)
+
+CENSO_PAIS$Provincia <- str_replace_all(
+  string = CENSO_PAIS$Provincia, 
+  pattern = "SUR 2", 
+  replacement = "SUR"
+)
+
+CENSO_PAIS$Jurisdicción <- str_remove_all(
+  string = CENSO_PAIS$Jurisdicción,
+  pattern = "\r"
+)
+
+
+CENSO_PAIS$Jurisdicción <- str_replace_all(
+  string = CENSO_PAIS$Jurisdicción, 
+  pattern = "\n", 
+  replacement = " "
+)
+
+CENSO_PAIS$Jurisdicción <- str_replace_all(
+  string = CENSO_PAIS$Jurisdicción, 
+  pattern = "Sur \\(2\\)", 
+  replacement = "Sur"
+)
+
+
+CENSO_PAIS$Provincia_ok <- case_when(
+  CENSO_PAIS$Provincia == "CIUDAD AUTONOMA DE BUENOS AIRES" ~ "AMBA",
+  CENSO_PAIS$Provincia == "24 PARTIDOS DEL GRAN BUENOS AIRES" ~ "AMBA",
+  CENSO_PAIS$Provincia == "RESTO DE PARTIDOS DE LA PROVINCIA DE BUENOS AIRES"  ~ "BUENOS AIRES",
+  CENSO_PAIS$Provincia == "TIERRA DEL FUEGO ANTARTIDA E ISLAS DEL ATLANTICO SUR" ~ "TIERRA DEL FUEGO",
+  TRUE ~ as.character(CENSO_PAIS$Provincia)
+)
+
+
+
+
+##creo df para importar datos por pcia
+CENSO_PCIAS <- setNames(data.frame(matrix(ncol = 7, nrow = 0)), c('Jurisdicción', 'Total', 'Hombres', 'Mujeres', 'X', 'Localidad', 'Provincia'))
+CENSO_PCIAS[, c(2:5)] <- sapply(CENSO_PCIAS[, c(2:5)], as.numeric)
+CENSO_PCIAS[, c(1,6,7)] <- sapply(CENSO_PCIAS[, c(1,6,7)], as.character)                                    
+
+
+
+
+i = 1
+while (i <25) {
+              CENSO_i <- read_excel(archivo, sheet = paste0("Cuadro 2.", i), skip = 4)
+              colnames(CENSO_i) <- c('Jurisdicción','Total','Hombres', 'Mujeres', 'X')  
+              CENSO_i <- CENSO_i[complete.cases(CENSO_i[, 2]),]
+              CENSO_i <- CENSO_i %>% 
+                mutate(CENSO_i , Localidad = toupper(stri_trans_general(CENSO_i$Jurisdicción,"Latin-ASCII"))) %>% 
+                mutate(CENSO_i , Provincia = toupper(stri_trans_general(str_split(string = sub(".*Provincia de*l? ", "", read_excel(archivo,  sheet = paste0("Cuadro 2.", i), range = "A1:A1", col_names = FALSE)[[1]]),
+                                                        pattern = '. Pob.*',
+                                                        simplify = TRUE
+                                                        )[,1]
+                                              ,"Latin-ASCII")
+                      )
+                            
+                      )
+              CENSO_PCIAS <- merge(CENSO_PCIAS, CENSO_i, all = TRUE)
+              
+              i = i + 1
+            }
+
+
+CENSO_PCIAS$X <- str_replace_all(
+  string = CENSO_PCIAS$X, 
+  pattern = "-", 
+  replacement = "0"
+)
+
+
+CENSO_PCIAS$Provincia <- case_when(
+                                    CENSO_PCIAS$Provincia == "CUADRO 2.1. CIUDAD AUTONOMA DE BUENOS AIRES" ~ "CIUDAD AUTONOMA DE BUENOS AIRES",
+                                    CENSO_PCIAS$Provincia == "CABA" ~ "CIUDAD AUTONOMA DE BUENOS AIRES",
+                                      CENSO_PCIAS$Provincia == "TIERRA DEL FUEGO, ANTARTIDA E ISLAS DEL ATLANTICO SUR" ~ "TIERRA DEL FUEGO",
+                                    TRUE ~ as.character(CENSO_PCIAS$Provincia)
+                                  )
+
+
+  
+  
+CENSO_PCIAS[, c(2:5)] <- sapply(CENSO_PCIAS[, c(2:5)], as.numeric)
+CENSO_PCIAS[, c(1,6,7)] <- sapply(CENSO_PCIAS[, c(1,6,7)], as.character)                                    
+
+rm(CENSO_i, archivo, i, url_censo)
+
+
+
+SolidoVsCenso <- sqldf("select a.Provincia
+              , cast(sum(lote) as integer) as [ANIs maximos asignables] 
+              , cast(max(b.Poblacion) as integer) as Poblacion 
+              , cast(max(b.Poblacion)*1.0/sum(lote)*1.0 as real) as PorcentajeTeorico
+      from    solido a 
+              left outer join 
+                  (select provincia_ok, sum(Total) as Poblacion
+                  from    CENSO_PAIS
+                  where provincia <> 'BUENOS AIRES'
+                  group by provincia_ok) b on a.provincia = b.provincia_ok
+                  where Tipo_Servicio = 'Celular'
+      group by a.provincia, b.provincia_ok") %>% 
+                    bind_rows(summarise(., across(where(is.integer), sum),
+                                         across(where(is.numeric), mean),
+                                   across(where(is.character), ~'Total')))
+  
+
+```
+
+```{r}
+
+
+SolidoVsCenso$`ANIs maximos asignables` <- format(SolidoVsCenso$`ANIs maximos asignables`, big.mark = ".", scientific = FALSE)
+SolidoVsCenso$Poblacion <- format(SolidoVsCenso$Poblacion, big.mark = ".", scientific = FALSE)
+
+
+
+kable_styling(
+              kable(SolidoVsCenso, digits = 3, row.names = FALSE, align = "lrrr", big.mark = '.',
+              caption = "Comparación Lineas Celulares Asignables versus Población x Provincia", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+
+
+```
+
+#### Habitantes x provincia y Lineas Asignables:
+
+Analizando los datos de lotes asignables por provincia versus los datos
+estimativos del Censo 2022 se puede ver que, en teoría, las numeraciónes
+son suficientes para el servicio celulares. No se hace comparación de
+telefonía fija ya que es un servicio con reducción de penetración en
+todo mercado.
+
+#### Heat Map proveedores servicio celular:
+
+```{r}
+
+
+heatmap01 <- sqldf("select provincia, Operador_ok as Operador, sum(lote) as Asignaciones 
+from solido where Tipo_Servicio = 'Celular' AND Operador_ok IN ('CLARO', 'TELECOM', 'TELEFONICA')
+                   group by Provincia, Operador_ok order by provincia, sum(lote) desc")
+
+
+heatmap02 <- sqldf("select a.provincia
+                          , a.Operador_ok as Operador
+                          , sum(a.lote)*1.0/max(b.lotes) as Asignaciones
+                          
+                    from  solido a 
+                          inner join (select provincia, sum(lote) lotes 
+                                      from solido 
+                                      where Tipo_Servicio = 'Celular' 
+                                      AND Operador_ok IN ('CLARO', 'TELECOM', 'TELEFONICA') 
+                                      group by provincia
+                                      ) b on a.provincia = b.provincia
+                    where Tipo_Servicio = 'Celular' 
+                          AND Operador_ok IN ('CLARO', 'TELECOM', 'TELEFONICA')
+                   group by a.Provincia, a.Operador_ok 
+                   order by a.provincia, sum(a.lote)*1.0/max(b.lotes)
+                   ")
+
+g2 <- 
+  ggplot(heatmap02) +
+  aes(x = Operador, y = Provincia, fill = Asignaciones) +
+  geom_tile(colour = "white")
+
+g2 
+
+```
+
+```{r}
+CENSO_PAIS$sup <- case_when(CENSO_PAIS$Provincia == "24 PARTIDOS DEL GRAN BUENOS AIRES" ~ 13082,
+                            CENSO_PAIS$Provincia == "BUENOS AIRES" ~ 307571,
+                            CENSO_PAIS$Provincia == "CIUDAD AUTONOMA DE BUENOS AIRES" ~ 203,
+                            CENSO_PAIS$Provincia == "RESTO DE PARTIDOS DE LA PROVINCIA DE BUENOS AIRES" ~ 294489,
+                            CENSO_PAIS$Provincia == "CATAMARCA" ~ 102602,
+                            CENSO_PAIS$Provincia == "CHACO" ~ 99633,
+                            CENSO_PAIS$Provincia == "CHUBUT" ~ 224686,
+                            CENSO_PAIS$Provincia == "CORDOBA" ~ 165321,
+                            CENSO_PAIS$Provincia == "CORRIENTES" ~ 88199,
+                            CENSO_PAIS$Provincia == "ENTRE RIOS" ~ 78781,
+                            CENSO_PAIS$Provincia == "FORMOSA" ~ 72066,
+                            CENSO_PAIS$Provincia == "JUJUY" ~ 53219,
+                            CENSO_PAIS$Provincia == "LA PAMPA" ~ 143440,
+                            CENSO_PAIS$Provincia == "LA RIOJA" ~ 89680,
+                            CENSO_PAIS$Provincia == "MENDOZA" ~ 148827,
+                            CENSO_PAIS$Provincia == "MISIONES" ~ 29801,
+                            CENSO_PAIS$Provincia == "NEUQUEN" ~ 94078,
+                            CENSO_PAIS$Provincia == "RIO NEGRO" ~ 203013,
+                            CENSO_PAIS$Provincia == "SAN JUAN" ~ 89651,
+                            CENSO_PAIS$Provincia == "SAN LUIS" ~ 76748,
+                            CENSO_PAIS$Provincia == "SANTA CRUZ" ~ 243943,
+                            CENSO_PAIS$Provincia == "SANTA FE" ~ 133007,
+                            CENSO_PAIS$Provincia == "SANTIAGO DEL ESTERO" ~ 136351,
+                            CENSO_PAIS$Provincia == "TIERRA DEL FUEGO ANTARTIDA E ISLAS DEL ATLANTICO SUR" ~ 21571,
+                            CENSO_PAIS$Provincia == "TUCUMAN" ~ 22524,
+                            CENSO_PAIS$Provincia == "SALTA" ~ 155488,
+                            TRUE ~ as.numeric(0)
+)
+
+
+censo_pais_hab_sup <- sqldf("select Provincia_ok, sum(Total) as habitantes, sum(sup) as sup from CENSO_PAIS where Provincia not in ('BUENOS AIRES') group by Provincia_ok")
+
+heatmap3 <- sqldf("select a.*, b.habitantes, b.sup from heatmap01 a inner join censo_pais_hab_sup b on a.Provincia = b.Provincia_ok")
+
+
+
+# 3 valores para los tonos, uno para cada oPERADOR---------------------------
+hues <- seq(50, 300, length.out = 3)
+
+# Gráfico 1 ------------------------------------------------------------------
+
+# Min y max de población, para generar la escala de colores, de modo
+# que sea comparable a través de todas las provincias, sin importar la región
+
+
+minimo <- min(heatmap3$Asignaciones)
+maximo <- max(heatmap3$Asignaciones)
+
+# Convertir población en un color
+heatmap3 <- 
+  heatmap3 %>%
+  mutate(index = as.numeric(factor(Operador))) %>%
+  group_by(index) %>%
+  mutate(
+    # Valor relativo al mínimo y máximo
+    valor = (Asignaciones - minimo) / (maximo - minimo),
+    # Convertir el valor a un color, respetando el tono
+    fill = scales::gradient_n_pal(
+      sequential_hcl(6, h = hues[index[1]], c = c(45, 20), l = c(30, 80), power = .5
+      ))(1 - valor)
+  )
+
+# Confeccionar el treemap
+g3 <- 
+  ggplot(heatmap3) +
+  aes(area = Asignaciones, subgroup = Operador, fill = fill) +
+  geom_treemap(color = "white", size = 0.5*.pt, alpha = NA) + 
+  geom_treemap_subgroup_text(
+    colour = "white",
+    place = "centre", alpha = 0.7,
+    grow = TRUE
+  ) +
+  geom_treemap_subgroup_border(color = "white") +
+  geom_treemap_text(
+    aes(label = Provincia),
+    color = "black",
+    place = "centre",
+    grow = FALSE
+  ) +
+  scale_fill_identity() +
+  coord_cartesian(clip = "off") +
+  guides(colour = "none", fill = "none")
+
+
+g3
+
+
+```
+
+A simple vista podemos observar que las distribuciones entre los 3
+grande operadores a nivel país son prácticamente idénticas. Las
+variaciones se deben a las asignaciones x zona, siendo Telefónica la que
+mayor cantidad de asignaciones tiene en AMBA; Telecom en Zona Norte y
+Telefónica en Zona Sur.
+
+```{r}
+disti_Operadores_zonas <-sqldf("select a.zona, a.Operador_ok Operador, sum(a.lote) Asignaciones, sum(a.lote)*1.0/b.asignaciones percent 
+        from solido a
+              inner join (select zona, sum(lote) as asignaciones 
+                          from solido
+                          where tipo_servicio = 'Celular' 
+                          group by zona
+                          having(sum(lote) >1000000)
+                          ) b on a.zona = b.zona
+      where tipo_servicio = 'Celular' group by a.zona, operador_ok having(sum(lote) >1000000) order by a.zona, sum(lote)  desc")
+
+disti_operadores <- sqldf("select Operador, sum(Asignaciones) [Total Asignaciones]
+                          , sum(Asignaciones)*1.0/(select sum(Asignaciones) from  disti_Operadores_zonas) as percent
+                          from disti_Operadores_zonas group by Operador")
+
+disti_Operadores_zonas$Asignaciones <- format(disti_Operadores_zonas$Asignaciones, big.mark = ".", scientific = FALSE)
+
+
+kable_styling(
+              kable(disti_Operadores_zonas, digits = 3, row.names = FALSE, align = "llrr", big.mark = '.',
+              caption = "Asignaciones celulares Big 3 x zona", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+
+
+```
+
+Sin embargo lo cual, a nivel país, la distibución parece estar
+"normalizada"
+
+```{r}
+disti_operadores$`Total Asignaciones` <- format(disti_operadores$`Total Asignaciones`, big.mark = ".", scientific = FALSE)
+
+
+kable_styling(
+              kable(disti_operadores, digits = 3, row.names = FALSE, align = "lrr", big.mark = '.',
+              caption = "Asignaciones celulares Big 3 Pais", format = "html"),
+        bootstrap_options = c("striped", "hover", "condensed"),
+        position = "center", full_width = FALSE)
+```
+
+
+
+# Cuadros Dinámicos
+
+
+```{r}
+ComboOperador <- sqldf("select Operador_ok as Operador from solido group by Operador_ok order by sum(lote) desc")
+ComboServicio <- sqldf("select Tipo_Servicio as [Tipo Servicio] from solido group by Tipo_Servicio order by Tipo_Servicio")
+ComboProvincia <- sqldf("select Provincia from solido group by Provincia order by Provincia")
+ComboZona <- sqldf("select Zona as Zona from solido group by Zona order by Zona")
+ComboLocalidad <- sqldf("select Localidad from solido group by Localidad order by Localidad")
+
+
+```
+
+
+## Column {.sidebar}
+
+```{r}
+
+selectInput("input_Zona"
+            , label="Zona:"
+            , choice= ComboZona$Zona
+            , selected = "All"
+            , multiple = TRUE
+            )
+
+selectInput("input_Provincia"
+            , label="Provincia:"
+            , choice= ComboProvincia$Provincia
+            , selected = "All"
+            , multiple = TRUE
+            )
+
+selectInput("input_Localidad"
+            , label="Localidad:"
+            , choice= ComboLocalidad$Localidad
+            , selected = "All"
+            , multiple = TRUE
+            )
+
+selectInput("input_Proveedor"
+            , label="Proveedor:"
+            , choice= ComboOperador$Operador
+            , selected = "All"
+            , multiple = TRUE
+            )
+
+
+
+selectInput("input_Servicio"
+            , label="Tipo Servicio:"
+            , choice= ComboServicio$`Tipo Servicio`
+            , selected = "All"
+            , multiple = TRUE
+            )
+
+
+
+
+```
+
+Row
+-----------------------------------------------------------------------
+
+### tabla numeracion geografica
+
+```{r}
+renderDT({
+
+tmp <- solido %>% 
+  filter(OPERADOR_ok %in% input$input_Proveedor | is.null(input$input_Proveedor)) %>% 
+  filter(Tipo_Servicio %in% input$input_Servicio | is.null(input$input_Servicio)) %>% 
+  filter(zona %in% input$input_Zona | is.null(input$input_Zona)) %>% 
+  filter(Provincia %in% input$input_Provincia | is.null(input$input_Provincia)) %>% 
+  filter(Localidad %in% input$input_Localidad | is.null(input$input_Localidad))
+
+tmp3 <- sqldf("select Operador_OK as Operador
+              , Tipo_Servicio
+              , zona
+              , Provincia
+              , Localidad
+              , Bloque
+              , ddn
+      from tmp")
+
+ datatable(
+    tmp3, 
+    escape = FALSE, 
+    selection = "none", 
+    rownames = FALSE, 
+    style = "bootstrap"
+  )
+})
+```
+
+
+Row
+-----------------------------------------------------------------------
+### Asignaciones por Provincia
+
+```{r}
+renderDT({
+
+  
+tmp2 <- solido %>% 
+  filter(OPERADOR_ok %in% input$input_Proveedor | is.null(input$input_Proveedor)) %>% 
+  filter(Tipo_Servicio %in% input$input_Servicio | is.null(input$input_Servicio)) %>% 
+  filter(zona %in% input$input_Zona | is.null(input$input_Zona)) %>% 
+  filter(Provincia %in% input$input_Provincia | is.null(input$input_Provincia)) %>% 
+  filter(Localidad %in% input$input_Localidad | is.null(input$input_Localidad)) %>% 
+  group_by(Provincia) %>% 
+  summarise(Q = n()
+            ,Asignaciones = sum(lote)) %>% 
+  arrange(desc(Q))
+  
+tmp2 <- 
+ datatable(
+    tmp2, 
+    escape = FALSE, 
+    selection = "none", 
+    rownames = FALSE, 
+    style = "bootstrap"
+  )
+
+
+})
+
+
+
+```
+
+
+
+
+Row
+-----------------------------------------------------------------------
+### Gráfico Asignaciones por Prestador
+
+
+```{r}
+renderValueBox({
+
+solido2 <- solido %>% 
+            filter(OPERADOR_ok %in% input$input_Proveedor | is.null(input$input_Proveedor)) %>% 
+            filter(Tipo_Servicio %in% input$input_Servicio | is.null(input$input_Servicio)) %>% 
+            filter(zona %in% input$input_Zona | is.null(input$input_Zona)) %>% 
+            filter(Provincia %in% input$input_Provincia | is.null(input$input_Provincia)) %>% 
+            filter(Localidad %in% input$input_Localidad | is.null(input$input_Localidad)) %>% 
+            mutate(PROVEEDOR = case_when(OPERADOR_ok == "TELECOM" ~ "TELECOM",
+                                         OPERADOR_ok == "TELEFONICA" ~ "TELEFONICA",
+                                         OPERADOR_ok == "CLARO" ~ "CLARO",
+                                         TRUE ~ "OTROS")) %>% 
+            group_by(zona, Tipo_Servicio, PROVEEDOR) %>% 
+            summarise(ASIGNACIONES = sum(lote)) %>% 
+            arrange(desc(ASIGNACIONES))
+           
+g<-  solido2 %>% 
+  ggplot(
+        aes(x = zona, fill = Tipo_Servicio, y = ASIGNACIONES
+        , text = paste("Zona:", zona, "\nTipo Servicio:", Tipo_Servicio, "\nproveedor:", PROVEEDOR, "\ncantidad:", ASIGNACIONES)) 
+        )+
+        labs(x = "Zona", y = "Asignaciones", fill = "Tipo de Servicio"
+            )+
+        geom_bar(position="stack", stat="identity")+
+        ggtitle("Distribución Proveedores por zona y tipo de servicio")+
+        facet_wrap(~ PROVEEDOR, nrow = 1)
+
+ggplotly(g, tooltip="text")
+
+})
+```
+
+
+
+
+
+
+
+# Búsqueda de ANI
+
+
+```{r}
+ComboOperador <- sqldf("select Operador_ok as Operador from solido group by Operador_ok order by sum(lote) desc")
+
+
+
+```
+
+
+## Column {.sidebar}
+
+```{r}
+
+
+
+numericInput("Ani_n",
+  label = "Inserte Número de teléfono  
+  (sin 0 ni 15)",
+  value = NA,
+  min = 110000000,
+  max = 3894000000,
+  step = NA,
+  width = NULL
+)
+
+```
+
+Row
+-----------------------------------------------------------------------
+
+### Busqueda ANI
+
+```{r}
+renderDT({
+
+ani <-  as.data.frame(ifelse(is.na(input$Ani_n), 341, input$Ani_n))
+
+ani2 <- fn$sqldf("select Operador_ok as Proveedor
+                        , zona
+                        , Provincia
+                        , Localidad
+                        , Tipo_Servicio as [Tipo Servicio]
+                        , Modalidad as Modalidad
+                        , lote
+                        , ddn
+                        , bloque
+                 from solido 
+                 where BIN = substring(case when $ani is '' then 3413096497 else $ani end , 1, ancho_Bin)")
+
+ datatable(
+    ani2, 
+    escape = FALSE, 
+    selection = "none", 
+    rownames = FALSE, 
+    style = "bootstrap"
+  )
+})
+```
+
+
+
+
+
